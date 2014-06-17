@@ -74,6 +74,12 @@ unsafe fn map_memory(size: uint) -> *mut u8 {
     ptr as *mut u8
 }
 
+unsafe fn remap_memory(ptr: *mut u8, old_size: uint, new_size: uint, flags: c_int) -> *mut u8 {
+    let ptr = mremap(ptr as *mut c_void, old_size as size_t, new_size as size_t, flags);
+    if unlikely!(ptr == MAP_FAILED as *mut c_void) { return ptr::mut_null() }
+    ptr as *mut u8
+}
+
 unsafe fn unmap_memory(ptr: *mut u8, size: uint) {
     munmap(ptr as *c_void, size as size_t);
 }
@@ -109,10 +115,7 @@ pub unsafe fn allocate(size: uint) -> *mut u8 {
 
 pub unsafe fn reallocate(ptr: *mut u8, old_size: uint, new_size: uint) -> *mut u8 {
     if unlikely!(old_size > slab_size && new_size > slab_size) {
-        let ptr = mremap(ptr as *mut c_void, old_size as size_t, new_size as size_t,
-                         MREMAP_MAYMOVE);
-        if unlikely!(ptr == MAP_FAILED as *mut c_void) { return ptr::mut_null() }
-        return ptr as *mut u8;
+        return remap_memory(ptr, old_size, new_size, MREMAP_MAYMOVE)
     }
 
     let dst = allocate(new_size);
@@ -123,8 +126,7 @@ pub unsafe fn reallocate(ptr: *mut u8, old_size: uint, new_size: uint) -> *mut u
 }
 
 pub unsafe fn reallocate_inplace(ptr: *mut u8, old_size: uint, new_size: uint) -> bool {
-    mremap(ptr as *mut c_void, old_size as size_t, new_size as size_t,
-           0) != MAP_FAILED as *mut c_void
+    remap_memory(ptr, old_size, new_size, 0).is_null()
 }
 
 unsafe fn deallocate_small(ptr: *mut u8, size: u32) {
