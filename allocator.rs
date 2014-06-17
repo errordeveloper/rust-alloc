@@ -15,13 +15,18 @@ extern crate std;
 use core::prelude::*;
 use core::num::Bitwise;
 use core::ptr;
-use libc::{PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_FAILED, c_void, mmap, munmap, size_t};
+use libc::{PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_FAILED, c_int, c_void, mmap, munmap, size_t};
 use MAP_ANONYMOUS = libc::consts::os::extra::MAP_ANONONYMOUS;
 
 extern {
     #[link_name = "llvm.expect.i8"]
-    pub fn expect(val: u8, expected_val: u8) -> u8;
+    fn expect(val: u8, expected_val: u8) -> u8;
+
+    fn mremap(old_address: *mut c_void, old_size: size_t, new_size: size_t, flags: c_int,
+              ... /* new_address: *mut c_void */) -> *mut c_void;
 }
+
+static MREMAP_MAYMOVE: c_int = 1;
 
 #[macro_export]
 macro_rules! likely(
@@ -106,16 +111,24 @@ pub unsafe fn allocate(size: uint) -> *mut u8 {
     map_memory(size)
 }
 
-pub unsafe fn reallocate(ptr: *mut u8, old_size: uint, size: uint) -> *mut u8 {
-    let dst = allocate(size);
+pub unsafe fn reallocate(ptr: *mut u8, old_size: uint, new_size: uint) -> *mut u8 {
+    if unlikely!(old_size > slab_size && new_size > slab_size) {
+        let ptr = mremap(ptr as *mut c_void, old_size as size_t, new_size as size_t,
+                         MREMAP_MAYMOVE);
+        if unlikely!(ptr == MAP_FAILED as *mut c_void) { return ptr::mut_null() }
+        return ptr as *mut u8;
+    }
+
+    let dst = allocate(new_size);
     if dst.is_null() { return ptr }
     ptr::copy_nonoverlapping_memory(dst, ptr as *u8, old_size);
     deallocate(ptr, old_size);
     dst
 }
 
-pub unsafe fn reallocate_inplace(ptr: *mut u8, old_size: uint, size: uint) -> bool {
-    false
+pub unsafe fn reallocate_inplace(ptr: *mut u8, old_size: uint, new_size: uint) -> bool {
+    mremap(ptr as *mut c_void, old_size as size_t, new_size as size_t,
+           0) != MAP_FAILED as *mut c_void
 }
 
 unsafe fn deallocate_small(ptr: *mut u8, size: u32) {
