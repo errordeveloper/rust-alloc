@@ -63,6 +63,20 @@ fn size_class_to_bucket(size_class: u32) -> u32 {
     size_class.trailing_zeros() - 4
 }
 
+unsafe fn map_memory(size: uint) -> *mut u8 {
+    let ptr = mmap(ptr::null(), size as size_t, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if unlikely!(ptr == MAP_FAILED as *mut c_void) {
+        ptr::mut_null()
+    } else {
+        ptr as *mut u8
+    }
+}
+
+unsafe fn unmap_memory(ptr: *mut u8, size: uint) {
+    munmap(ptr as *c_void, size as size_t);
+}
+
 unsafe fn allocate_small(size: u32) -> *mut u8 {
     let size_class = get_size_class(size);
     let bucket = size_class_to_bucket(size_class);
@@ -73,11 +87,8 @@ unsafe fn allocate_small(size: u32) -> *mut u8 {
         return current as *mut u8;
     }
 
-    let ptr = mmap(ptr::null(), slab_size as size_t, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) as *mut u8;
-    if unlikely!(ptr == MAP_FAILED as *mut u8) {
-        return ptr::mut_null()
-    }
+    let ptr = map_memory(slab_size);
+    if unlikely!(ptr.is_null()) { return ptr }
 
     for offset in core::iter::range_step(size_class, slab_size as u32, size_class) {
         let block: *mut FreeBlock = ptr.offset(offset as int) as *mut FreeBlock;
@@ -92,14 +103,7 @@ pub unsafe fn allocate(size: uint) -> *mut u8 {
     if likely!(size < slab_size) {
         return allocate_small(size as u32)
     }
-
-    let ptr = mmap(ptr::null(), size as size_t, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if unlikely!(ptr == MAP_FAILED as *mut c_void) {
-        ptr::mut_null()
-    } else {
-        ptr as *mut u8
-    }
+    map_memory(size)
 }
 
 unsafe fn deallocate_small(ptr: *mut u8, size: u32) {
@@ -115,8 +119,7 @@ pub unsafe fn deallocate(ptr: *mut u8, size: uint) {
     if likely!(size < slab_size) {
         return deallocate_small(ptr, size as u32)
     }
-
-    munmap(ptr as *c_void, size as size_t);
+    unmap_memory(ptr, size);
 }
 
 #[cfg(test)]
