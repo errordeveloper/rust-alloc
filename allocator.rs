@@ -106,6 +106,18 @@ pub unsafe fn allocate(size: uint) -> *mut u8 {
     map_memory(size)
 }
 
+pub unsafe fn reallocate(ptr: *mut u8, old_size: uint, size: uint) -> *mut u8 {
+    let dst = allocate(size);
+    if dst.is_null() { return ptr }
+    ptr::copy_nonoverlapping_memory(dst, ptr as *u8, old_size);
+    deallocate(ptr, old_size);
+    dst
+}
+
+pub unsafe fn reallocate_inplace(ptr: *mut u8, old_size: uint, size: uint) -> bool {
+    false
+}
+
 unsafe fn deallocate_small(ptr: *mut u8, size: u32) {
     let size_class = get_size_class(size);
     let bucket = size_class_to_bucket(size_class);
