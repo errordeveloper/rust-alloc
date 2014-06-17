@@ -15,8 +15,8 @@ extern crate std;
 use core::prelude::*;
 use core::num::Bitwise;
 use core::ptr;
-use libc::{PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_FAILED, c_int, c_void, mmap, munmap, size_t};
-use MAP_ANONYMOUS = libc::consts::os::extra::MAP_ANONONYMOUS;
+use libc::{PROT_READ, PROT_WRITE, MAP_ANON, MAP_PRIVATE, MAP_FAILED, c_int, c_void, mmap, munmap,
+           size_t};
 
 extern {
     #[link_name = "llvm.expect.i8"]
@@ -69,13 +69,9 @@ fn size_class_to_bucket(size_class: u32) -> u32 {
 }
 
 unsafe fn map_memory(size: uint) -> *mut u8 {
-    let ptr = mmap(ptr::null(), size as size_t, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if unlikely!(ptr == MAP_FAILED as *mut c_void) {
-        ptr::mut_null()
-    } else {
-        ptr as *mut u8
-    }
+    let ptr = mmap(ptr::null(), size as size_t, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    if unlikely!(ptr == MAP_FAILED as *mut c_void) { return ptr::mut_null() }
+    ptr as *mut u8
 }
 
 unsafe fn unmap_memory(ptr: *mut u8, size: uint) {
