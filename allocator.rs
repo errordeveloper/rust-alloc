@@ -1,5 +1,5 @@
 #![crate_type = "lib"]
-#![feature(macro_rules, globs)]
+#![feature(macro_rules, globs, thread_local)]
 #![allow(unused_unsafe)] // broken with macro expansion
 
 #![no_std]
@@ -13,6 +13,7 @@ extern crate native;
 extern crate std;
 
 use core::prelude::*;
+use core::kinds::marker;
 use core::num::Bitwise;
 use core::ptr;
 use libc::{PROT_READ, PROT_WRITE, MAP_ANON, MAP_PRIVATE, MAP_FAILED, c_int, c_void, mmap, munmap,
@@ -48,6 +49,51 @@ macro_rules! unlikely(
     }
 )
 
+pub trait Allocator {
+    unsafe fn allocate(&mut self, size: uint) -> *mut u8;
+    unsafe fn reallocate(&mut self, ptr: *mut u8, old_size: uint, new_size: uint) -> *mut u8;
+    unsafe fn reallocate_inplace(&mut self, ptr: *mut u8, old_size: uint, new_size: uint) -> bool;
+    unsafe fn deallocate(&mut self, ptr: *mut u8, size: uint);
+}
+
+pub struct LocalAlloc {
+    no_send: marker::NoSend
+}
+
+pub static mut local_alloc: LocalAlloc = LocalAlloc { no_send: marker::NoSend };
+
+impl Allocator for LocalAlloc {
+    unsafe fn allocate(&mut self, size: uint) -> *mut u8 {
+        if likely!(size < slab_size) {
+            return allocate_small(size as u32)
+        }
+        map_memory(size)
+    }
+
+    unsafe fn reallocate(&mut self, ptr: *mut u8, old_size: uint, new_size: uint) -> *mut u8 {
+        if unlikely!(old_size > slab_size && new_size > slab_size) {
+            return remap_memory(ptr, old_size, new_size, MREMAP_MAYMOVE)
+        }
+
+        let dst = local_alloc.allocate(new_size);
+        if dst.is_null() { return ptr }
+        ptr::copy_nonoverlapping_memory(dst, ptr as *u8, old_size);
+        local_alloc.deallocate(ptr, old_size);
+        dst
+    }
+
+    unsafe fn reallocate_inplace(&mut self, ptr: *mut u8, old_size: uint, new_size: uint) -> bool {
+        remap_memory(ptr, old_size, new_size, 0).is_null()
+    }
+
+    unsafe fn deallocate(&mut self, ptr: *mut u8, size: uint) {
+        if likely!(size < slab_size) {
+            return deallocate_small(ptr, size as u32)
+        }
+        unmap_memory(ptr, size);
+    }
+}
+
 struct FreeBlock {
     next: *mut FreeBlock,
     // padding
@@ -57,6 +103,7 @@ static initial_bucket: uint = 16;
 static n_buckets: uint = 17;
 static slab_size: uint = initial_bucket << (n_buckets - 1);
 
+#[thread_local]
 static mut buckets: [*mut FreeBlock, ..n_buckets] = [0 as *mut FreeBlock, ..n_buckets];
 
 fn get_size_class(size: u32) -> u32 {
@@ -106,29 +153,6 @@ unsafe fn allocate_small(size: u32) -> *mut u8 {
     ptr
 }
 
-pub unsafe fn allocate(size: uint) -> *mut u8 {
-    if likely!(size < slab_size) {
-        return allocate_small(size as u32)
-    }
-    map_memory(size)
-}
-
-pub unsafe fn reallocate(ptr: *mut u8, old_size: uint, new_size: uint) -> *mut u8 {
-    if unlikely!(old_size > slab_size && new_size > slab_size) {
-        return remap_memory(ptr, old_size, new_size, MREMAP_MAYMOVE)
-    }
-
-    let dst = allocate(new_size);
-    if dst.is_null() { return ptr }
-    ptr::copy_nonoverlapping_memory(dst, ptr as *u8, old_size);
-    deallocate(ptr, old_size);
-    dst
-}
-
-pub unsafe fn reallocate_inplace(ptr: *mut u8, old_size: uint, new_size: uint) -> bool {
-    remap_memory(ptr, old_size, new_size, 0).is_null()
-}
-
 unsafe fn deallocate_small(ptr: *mut u8, size: u32) {
     let size_class = get_size_class(size);
     let bucket = size_class_to_bucket(size_class);
@@ -136,28 +160,4 @@ unsafe fn deallocate_small(ptr: *mut u8, size: u32) {
 
     (*block).next = buckets[bucket as uint];
     buckets[bucket as uint] = block;
-}
-
-pub unsafe fn deallocate(ptr: *mut u8, size: uint) {
-    if likely!(size < slab_size) {
-        return deallocate_small(ptr, size as u32)
-    }
-    unmap_memory(ptr, size);
-}
-
-#[cfg(test)]
-mod tests {
-    use core::ptr::RawPtr;
-    use super::{allocate, deallocate};
-
-    #[test]
-    fn basic() {
-        unsafe {
-            let ptr = allocate(16);
-            if ptr.is_null() {
-                unsafe { ::core::intrinsics::abort() }
-            }
-            deallocate(ptr, 16);
-        }
-    }
 }
