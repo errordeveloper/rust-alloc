@@ -83,7 +83,10 @@ impl Allocator for LocalAlloc {
     }
 
     unsafe fn reallocate_inplace(&mut self, ptr: *mut u8, old_size: uint, new_size: uint) -> bool {
-        remap_memory(ptr, old_size, new_size, 0).is_null()
+        if unlikely!(old_size > slab_size && new_size > slab_size) {
+            return remap_memory(ptr, old_size, new_size, 0).is_null()
+        }
+        false
     }
 
     unsafe fn deallocate(&mut self, ptr: *mut u8, size: uint) {
