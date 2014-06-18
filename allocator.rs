@@ -13,11 +13,15 @@ extern crate native;
 extern crate std;
 
 use core::prelude::*;
+use core::mem;
 use core::kinds::marker;
 use core::num::Bitwise;
 use core::ptr;
 use libc::{PROT_READ, PROT_WRITE, MAP_ANON, MAP_PRIVATE, MAP_FAILED, c_int, c_void, mmap, munmap,
            size_t};
+
+#[allow(non_camel_case_types)]
+type pthread_key_t = libc::c_uint;
 
 extern {
     #[link_name = "llvm.expect.i8"]
@@ -25,6 +29,11 @@ extern {
 
     fn mremap(old_address: *mut c_void, old_size: size_t, new_size: size_t, flags: c_int,
               ... /* new_address: *mut c_void */) -> *mut c_void;
+
+    fn pthread_key_create(key: *mut pthread_key_t,
+                          dtor: unsafe extern "C" fn(*mut c_void)) -> c_int;
+    fn pthread_getspecific(key: pthread_key_t) -> *mut c_void;
+    fn pthread_setspecific(key: pthread_key_t, value: *mut c_void) -> c_int;
 }
 
 static MREMAP_MAYMOVE: c_int = 1;
@@ -58,6 +67,22 @@ pub trait Allocator {
 
 pub struct LocalAlloc {
     no_send: marker::NoSend
+}
+
+static mut key: pthread_key_t = 0;
+
+impl LocalAlloc {
+    pub unsafe fn init() {
+        unsafe extern fn local_free(chunk: *mut c_void) {
+            let mut iter = chunk as *mut LocalChunk;
+            while iter.is_not_null() {
+                let current = iter;
+                iter = (*iter).next;
+                unmap_memory(current as *mut u8, mem::size_of::<LocalChunk>());
+            }
+        }
+        pthread_key_create(&mut key, local_free);
+    }
 }
 
 pub static mut local_alloc: LocalAlloc = LocalAlloc { no_send: marker::NoSend };
@@ -95,6 +120,11 @@ impl Allocator for LocalAlloc {
         }
         unmap_memory(ptr, size);
     }
+}
+
+struct LocalChunk {
+    data: [u8, ..slab_size],
+    next: *mut LocalChunk
 }
 
 struct FreeBlock {
@@ -144,7 +174,12 @@ unsafe fn allocate_small(size: u32) -> *mut u8 {
         return current as *mut u8;
     }
 
-    let ptr = map_memory(slab_size);
+    let chunk = map_memory(mem::size_of::<LocalChunk>()) as *mut LocalChunk;
+    (*chunk).next = pthread_getspecific(key) as *mut LocalChunk;
+    pthread_setspecific(key, chunk as *mut c_void);
+
+    let ptr: *mut u8 = (*chunk).data.as_mut_ptr();
+
     if unlikely!(ptr.is_null()) { return ptr }
 
     for offset in core::iter::range_step(size_class, slab_size as u32, size_class) {
