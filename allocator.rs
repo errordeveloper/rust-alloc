@@ -17,46 +17,20 @@ use core::mem;
 use core::kinds::marker;
 use core::num::Bitwise;
 use core::ptr;
-use libc::{PROT_READ, PROT_WRITE, MAP_ANON, MAP_PRIVATE, MAP_FAILED, c_int, c_void, mmap, munmap,
-           size_t};
+use libc::{c_int, c_void};
+
+mod macros;
+mod memory;
 
 #[allow(non_camel_case_types)]
 type pthread_key_t = libc::c_uint;
 
 extern {
-    #[link_name = "llvm.expect.i8"]
-    fn expect(val: u8, expected_val: u8) -> u8;
-
-    fn mremap(old_address: *mut c_void, old_size: size_t, new_size: size_t, flags: c_int,
-              ... /* new_address: *mut c_void */) -> *mut c_void;
-
     fn pthread_key_create(key: *mut pthread_key_t,
                           dtor: unsafe extern "C" fn(*mut c_void)) -> c_int;
     fn pthread_getspecific(key: pthread_key_t) -> *mut c_void;
     fn pthread_setspecific(key: pthread_key_t, value: *mut c_void) -> c_int;
 }
-
-static MREMAP_MAYMOVE: c_int = 1;
-
-#[macro_export]
-macro_rules! likely(
-    ($val:expr) => {
-        {
-            let x: bool = $val;
-            unsafe { expect(x as u8, 1) != 0 }
-        }
-    }
-)
-
-#[macro_export]
-macro_rules! unlikely(
-    ($val:expr) => {
-        {
-            let x: bool = $val;
-            unsafe { expect(x as u8, 0) != 0 }
-        }
-    }
-)
 
 pub trait Allocator {
     unsafe fn allocate(&mut self, size: uint) -> *mut u8;
@@ -78,7 +52,7 @@ impl LocalAlloc {
             while iter.is_not_null() {
                 let current = iter;
                 iter = (*iter).next;
-                unmap_memory(current as *mut u8, mem::size_of::<LocalChunk>());
+                memory::unmap(current as *mut u8, mem::size_of::<LocalChunk>());
             }
         }
         pthread_key_create(&mut key, local_free);
@@ -92,12 +66,12 @@ impl Allocator for LocalAlloc {
         if likely!(size < slab_size) {
             return allocate_small(size as u32)
         }
-        map_memory(size)
+        memory::map(size)
     }
 
     unsafe fn reallocate(&mut self, ptr: *mut u8, old_size: uint, new_size: uint) -> *mut u8 {
         if unlikely!(old_size > slab_size && new_size > slab_size) {
-            return remap_memory(ptr, old_size, new_size, MREMAP_MAYMOVE)
+            return memory::remap(ptr, old_size, new_size)
         }
 
         let dst = local_alloc.allocate(new_size);
@@ -109,7 +83,7 @@ impl Allocator for LocalAlloc {
 
     unsafe fn reallocate_inplace(&mut self, ptr: *mut u8, old_size: uint, new_size: uint) -> bool {
         if unlikely!(old_size > slab_size && new_size > slab_size) {
-            return remap_memory(ptr, old_size, new_size, 0).is_null()
+            return memory::remap_inplace(ptr, old_size, new_size)
         }
         false
     }
@@ -118,7 +92,7 @@ impl Allocator for LocalAlloc {
         if likely!(size < slab_size) {
             return deallocate_small(ptr, size as u32)
         }
-        unmap_memory(ptr, size);
+        memory::unmap(ptr, size);
     }
 }
 
@@ -148,22 +122,6 @@ fn size_class_to_bucket(size_class: u32) -> u32 {
     size_class.trailing_zeros() - 4
 }
 
-unsafe fn map_memory(size: uint) -> *mut u8 {
-    let ptr = mmap(ptr::null(), size as size_t, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
-    if unlikely!(ptr == MAP_FAILED as *mut c_void) { return ptr::mut_null() }
-    ptr as *mut u8
-}
-
-unsafe fn remap_memory(ptr: *mut u8, old_size: uint, new_size: uint, flags: c_int) -> *mut u8 {
-    let ptr = mremap(ptr as *mut c_void, old_size as size_t, new_size as size_t, flags);
-    if unlikely!(ptr == MAP_FAILED as *mut c_void) { return ptr::mut_null() }
-    ptr as *mut u8
-}
-
-unsafe fn unmap_memory(ptr: *mut u8, size: uint) {
-    munmap(ptr as *c_void, size as size_t);
-}
-
 unsafe fn allocate_small(size: u32) -> *mut u8 {
     let size_class = get_size_class(size);
     let bucket = size_class_to_bucket(size_class);
@@ -174,7 +132,7 @@ unsafe fn allocate_small(size: u32) -> *mut u8 {
         return current as *mut u8;
     }
 
-    let chunk = map_memory(mem::size_of::<LocalChunk>()) as *mut LocalChunk;
+    let chunk = memory::map(mem::size_of::<LocalChunk>()) as *mut LocalChunk;
     (*chunk).next = pthread_getspecific(key) as *mut LocalChunk;
     pthread_setspecific(key, chunk as *mut c_void);
 
