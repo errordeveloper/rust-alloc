@@ -8,7 +8,7 @@ use core::mem::size_of;
 static n: uint = 1000000;
 
 #[start]
-fn main(_: int, _: **u8) -> int {
+fn main(_: int, _: *const *const u8) -> int {
     unsafe {
         LocalAlloc::init();
 
@@ -17,7 +17,7 @@ fn main(_: int, _: **u8) -> int {
             abort();
         }
 
-        for _ in range(0, 100) {
+        for _ in range(0u, 100) {
             for j in range(0, n) {
                 let ptr = allocations.offset(j as int);
                 *ptr = local_alloc.allocate(size_of::<u32>()) as *mut u32;

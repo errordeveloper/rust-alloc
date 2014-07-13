@@ -15,7 +15,7 @@ extern crate std;
 use core::prelude::*;
 use core::mem;
 use core::kinds::marker;
-use core::num::Bitwise;
+use core::num::Int;
 use core::ptr;
 use libc::{c_int, c_void};
 
@@ -76,7 +76,7 @@ impl Allocator for LocalAlloc {
 
         let dst = local_alloc.allocate(new_size);
         if dst.is_null() { return ptr }
-        ptr::copy_nonoverlapping_memory(dst, ptr as *u8, old_size);
+        ptr::copy_nonoverlapping_memory(dst, ptr as *const u8, old_size);
         local_alloc.deallocate(ptr, old_size);
         dst
     }
@@ -114,7 +114,7 @@ static slab_size: uint = initial_bucket << (n_buckets - 1);
 static mut buckets: [*mut FreeBlock, ..n_buckets] = [0 as *mut FreeBlock, ..n_buckets];
 
 fn get_size_class(size: u32) -> u32 {
-    let pow2 = 1 << (32 - (size - 1).leading_zeros());
+    let pow2 = 1 << (32 - (size - 1).leading_zeros()) as uint;
     if pow2 < 16 { 16 } else { pow2 }
 }
 
